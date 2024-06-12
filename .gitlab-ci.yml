@@ -5,6 +5,11 @@ stages:
   - scan     # Stage to scan for vulnerabilities
   - deploy   # Stage to deploy the application
 
+# Set Docker Hub Environment Variables
+variables:
+  DOCKER_HUB_USERNAME: "your_dockerhub_username"
+  DOCKER_HUB_PASSWORD: "your_dockerhub_password"
+
 # Step 1: Building the application
 build_application:
   stage: build                # This job runs in the 'build' stage
@@ -48,8 +53,10 @@ deploy_to_staging:
   image: python:3.9          # Use the Python 3.9 Docker image
   script:                    # List of commands to run for this job
     - apt-get update -qy     # Update the package list
-    - apt-get install -qy sshpass  # Install sshpass for password-based SSH
-    - sshpass -p $STAGING_SERVER_PASSWORD scp -o StrictHostKeyChecking=no -r build/ $STAGING_SERVER_USER@$STAGING_SERVER_IP:/path/to/deploy
+    - apt-get install -qy openssh-client  # Install OpenSSH client for SSH commands
+    - ssh -o StrictHostKeyChecking=no -i /path/to/your/private/key.pem $STAGING_SERVER_USER@$STAGING_SERVER_IP "mkdir -p /path/to/deploy"
+                              # Create the deployment directory on the server if it doesn't exist
+    - scp -r -i /path/to/your/private/key.pem build/ $STAGING_SERVER_USER@$STAGING_SERVER_IP:/path/to/deploy
                               # Securely copy the 'build/' directory to the staging server
   only:
     - main                   # Only run this job on the 'main' branch
@@ -64,7 +71,8 @@ build_docker_image:
   services:
     - docker:dind            # Enable Docker-in-Docker service
   script:                    # List of commands to run for this job
-    - docker build -t my-ecommerce-app:latest .  # Build the Docker image and tag it
+    - docker build -t $DOCKER_HUB_USERNAME/my-ecommerce-app:latest .
+                              # Build the Docker image and tag it with your Docker Hub username
   artifacts:
     paths:
       - docker_image.tar     # Save the Docker image as an artifact
@@ -76,7 +84,8 @@ scan_docker_image:
   stage: scan                # This job runs in the 'scan' stage
   image: aquasec/trivy:latest  # Use the Trivy Docker image for scanning
   script:                    # List of commands to run for this job
-    - trivy image --exit-code 1 my-ecommerce-app:latest || exit 0  # Scan the Docker image, exit if vulnerabilities found
+    - trivy image --exit-code 1 $DOCKER_HUB_USERNAME/my-ecommerce-app:latest || exit 0
+                              # Scan the Docker image, exit if vulnerabilities found
   dependencies:
     - build_docker_image     # This job depends on the 'build_docker_image' job
 
@@ -87,10 +96,7 @@ push_docker_image:
   services:
     - docker:dind            # Enable Docker-in-Docker service
   script:                    # List of commands to run for this job
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
-                              # Log in to the Docker registry
-    - docker push my-ecommerce-app:latest  # Push the Docker image to the registry
-  only:
-    - main                   # Only run this job on the 'main' branch
-  dependencies:
-    - scan_docker_image      # This job depends on the 'scan_docker_image' job
+    - echo "$DOCKER_HUB_PASSWORD" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
+                              # Log in to Docker Hub using environment variables
+    - docker push $DOCKER_HUB_USERNAME/my-ecommerce-app:latest
+                              #
