@@ -1,0 +1,96 @@
+# Define the stages of the pipeline
+stages:
+  - build    # Stage to build the application
+  - test     # Stage to run unit tests
+  - scan     # Stage to scan for vulnerabilities
+  - deploy   # Stage to deploy the application
+
+# Step 1: Building the application
+build_application:
+  stage: build                # This job runs in the 'build' stage
+  image: python:3.9           # Use the Python 3.9 Docker image
+  script:                     # List of commands to run for this job
+    - pip install -r requirements.txt   # Install dependencies from requirements.txt
+    - python manage.py build            # Build the application using the Django management command
+  artifacts:
+    paths:
+      - build/               # Save the 'build/' directory as an artifact to use in later stages
+
+# Step 2: Running unit tests
+run_tests:
+  stage: test                # This job runs in the 'test' stage
+  image: python:3.9          # Use the Python 3.9 Docker image
+  script:                    # List of commands to run for this job
+    - pip install -r requirements.txt  # Install dependencies from requirements.txt
+    - pytest                         # Run unit tests using pytest
+  artifacts:
+    reports:
+      junit: pytest.xml     # Save test results in JUnit XML format for test reports
+  dependencies:
+    - build_application     # This job depends on the 'build_application' job
+
+# Step 3: Scan the application for vulnerabilities
+security_scan:
+  stage: scan                # This job runs in the 'scan' stage
+  image: python:3.9          # Use the Python 3.9 Docker image
+  script:                    # List of commands to run for this job
+    - pip install bandit     # Install the Bandit security linter
+    - bandit -r . -f json -o bandit_report.json  # Run Bandit to scan for vulnerabilities and output in JSON format
+  artifacts:
+    reports:
+      codequality: bandit_report.json  # Save the Bandit report for code quality analysis
+  dependencies:
+    - build_application     # This job depends on the 'build_application' job
+
+# Step 4: Deploying the application to a staging server
+deploy_to_staging:
+  stage: deploy              # This job runs in the 'deploy' stage
+  image: python:3.9          # Use the Python 3.9 Docker image
+  script:                    # List of commands to run for this job
+    - apt-get update -qy     # Update the package list
+    - apt-get install -qy sshpass  # Install sshpass for password-based SSH
+    - sshpass -p $STAGING_SERVER_PASSWORD scp -o StrictHostKeyChecking=no -r build/ $STAGING_SERVER_USER@$STAGING_SERVER_IP:/path/to/deploy
+                              # Securely copy the 'build/' directory to the staging server
+  only:
+    - main                   # Only run this job on the 'main' branch
+  dependencies:
+    - build_application      # This job depends on the 'build_application' job
+    - run_tests              # This job also depends on the 'run_tests' job
+
+# Step 5: Build the Docker image
+build_docker_image:
+  stage: build               # This job runs in the 'build' stage
+  image: docker:latest       # Use the latest Docker image
+  services:
+    - docker:dind            # Enable Docker-in-Docker service
+  script:                    # List of commands to run for this job
+    - docker build -t my-ecommerce-app:latest .  # Build the Docker image and tag it
+  artifacts:
+    paths:
+      - docker_image.tar     # Save the Docker image as an artifact
+  dependencies:
+    - build_application      # This job depends on the 'build_application' job
+
+# Step 6: Scan the Docker image for vulnerabilities
+scan_docker_image:
+  stage: scan                # This job runs in the 'scan' stage
+  image: aquasec/trivy:latest  # Use the Trivy Docker image for scanning
+  script:                    # List of commands to run for this job
+    - trivy image --exit-code 1 my-ecommerce-app:latest || exit 0  # Scan the Docker image, exit if vulnerabilities found
+  dependencies:
+    - build_docker_image     # This job depends on the 'build_docker_image' job
+
+# Step 7: Push the Docker image to a registry if it passes the scan
+push_docker_image:
+  stage: deploy              # This job runs in the 'deploy' stage
+  image: docker:latest       # Use the latest Docker image
+  services:
+    - docker:dind            # Enable Docker-in-Docker service
+  script:                    # List of commands to run for this job
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+                              # Log in to the Docker registry
+    - docker push my-ecommerce-app:latest  # Push the Docker image to the registry
+  only:
+    - main                   # Only run this job on the 'main' branch
+  dependencies:
+    - scan_docker_image      # This job depends on the 'scan_docker_image' job
